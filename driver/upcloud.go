@@ -20,14 +20,16 @@ import (
 
 type Driver struct {
 	*drivers.BaseDriver
-	User         string
-	Passwd       string
-	Template     string
-	Plan         string
-	Zone         string
-	ServerUUID   string
-	ServerName   string
-	UserDataFile string
+	User                  string
+	Passwd                string
+	Template              string
+	Plan                  string
+	Zone                  string
+	UsePrivateNetwork     bool
+	UsePrivateNetworkOnly bool
+	ServerUUID            string
+	ServerName            string
+	UserDataFile          string
 }
 
 const (
@@ -75,10 +77,15 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "upcloud plan",
 			Value:  defaultPlan,
 		},
-		mcnflag.StringFlag{
-			EnvVar: "UPCLOUD_NAME",
-			Name:   "upcloud-name",
-			Usage:  "a name has to be set ",
+		mcnflag.BoolFlag{
+			EnvVar: "UPCLOUD_USE_PRIVATE_NETWORK",
+			Name:   "upcloud-use-private-network",
+			Usage:  "set this flag to use private networking",
+		},
+		mcnflag.BoolFlag{
+			EnvVar: "UPCLOUD_USE_PRIVATE_NETWORK_ONLY",
+			Name:   "upcloud-use-private-network-only",
+			Usage:  "set this flag to only use private networking",
 		},
 		mcnflag.StringFlag{
 			EnvVar: "UPCLOUD_USERDATA",
@@ -116,13 +123,15 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SSHUser = flags.String("upcloud-ssh-user")
 	d.Template = flags.String("upcloud-template")
 	d.Zone = flags.String("upcloud-zone")
+	d.UsePrivateNetwork = flags.Bool("upcloud-use-private-network")
+	d.UsePrivateNetworkOnly = flags.Bool("upcloud-use-private-network-only")
 	d.Plan = flags.String("upcloud-plan")
-	d.ServerName = flags.String("upcloud-name")
+	d.ServerName = d.MachineName
 	d.UserDataFile = flags.String("upcloud-userdata")
 	d.SetSwarmConfigFromFlags(flags)
 
-	if d.User == "" || d.Passwd == "" || d.ServerName == "" {
-		return fmt.Errorf("upcloud driver requires the --upcloud-user, the --upcloud-passwd, and the --upcloud-name options")
+	if d.User == "" || d.Passwd == "" {
+		return fmt.Errorf("upcloud driver requires upcloud credentials.")
 	}
 
 	return nil
@@ -135,8 +144,7 @@ func (d *Driver) PreCreateCheck() error {
 		}
 	}
 
-	client := d.getClient()
-	service := d.getService(client)
+	service := d.getService()
 	zones, err := service.GetZones()
 	if err != nil {
 		return err
@@ -177,15 +185,18 @@ func (d *Driver) Create() error {
 		SSHKeys:  []string{strPublicKey},
 	}
 
-	ipAddresses := []request.CreateServerIPAddress{
+	ipAddressesAry := []request.CreateServerIPAddress{
 		{
 			Access: upcloud.IPAddressAccessPrivate,
 			Family: upcloud.IPAddressFamilyIPv4,
 		},
-		{
+	}
+
+	if !d.UsePrivateNetworkOnly {
+		ipAddressesAry = append(ipAddressesAry, request.CreateServerIPAddress{
 			Access: upcloud.IPAddressAccessPublic,
 			Family: upcloud.IPAddressFamilyIPv4,
-		},
+		})
 	}
 
 	storageDevices := []upcloud.CreateServerStorageDevice{
@@ -200,8 +211,7 @@ func (d *Driver) Create() error {
 
 	log.Infof("Creating upcloud server...")
 
-	client := d.getClient()
-	service := d.getService(client)
+	service := d.getService()
 
 	title := "docker-machine - " + d.ServerName
 
@@ -213,7 +223,7 @@ func (d *Driver) Create() error {
 		UserData:       userdata,
 		LoginUser:      loginUser,
 		StorageDevices: storageDevices,
-		IPAddresses:    ipAddresses,
+		IPAddresses:    ipAddressesAry,
 	}
 
 	newServer, err := service.CreateServer(createRequest)
@@ -235,8 +245,14 @@ func (d *Driver) Create() error {
 			return err
 		}
 		for _, address := range newServer.IPAddresses {
-			if address.Access == upcloud.IPAddressAccessPublic && address.Family == upcloud.IPAddressFamilyIPv4 {
-				d.IPAddress = address.Address
+			if d.UsePrivateNetwork || d.UsePrivateNetworkOnly {
+				if address.Access == upcloud.IPAddressAccessPrivate && address.Family == upcloud.IPAddressFamilyIPv4 {
+					d.IPAddress = address.Address
+				}
+			} else {
+				if address.Access == upcloud.IPAddressAccessPublic && address.Family == upcloud.IPAddressFamilyIPv4 {
+					d.IPAddress = address.Address
+				}
 			}
 		}
 
@@ -268,8 +284,7 @@ func (d *Driver) GetURL() (string, error) {
 }
 
 func (d *Driver) GetState() (state.State, error) {
-	client := d.getClient()
-	service := d.getService(client)
+	service := d.getService()
 
 	getServerDetailsRequest := &request.GetServerDetailsRequest{
 		UUID: d.ServerUUID,
@@ -297,51 +312,37 @@ func (d *Driver) GetState() (state.State, error) {
 }
 
 func (d *Driver) Start() error {
-	client := d.getClient()
-	service := d.getService(client)
-
-	request := &request.StartServerRequest{
-		UUID: d.ServerUUID,
-	}
-	_, err := service.StartServer(request)
+	err := d.startServer(d.ServerUUID)
 	return err
 }
 
 func (d *Driver) Stop() error {
-	client := d.getClient()
-	service := d.getService(client)
-
-	request := &request.StopServerRequest{
-		UUID: d.ServerUUID,
-	}
-	_, err := service.StopServer(request)
+	err := d.stopServer(d.ServerUUID, request.ServerStopTypeSoft)
 	return err
 }
 
 func (d *Driver) Restart() error {
-	client := d.getClient()
-	service := d.getService(client)
-
-	request := &request.RestartServerRequest{
-		UUID: d.ServerUUID,
-	}
-	_, err := service.RestartServer(request)
+	err := d.restartServer(d.ServerUUID)
 	return err
 }
 
 func (d *Driver) Kill() error {
-	client := d.getClient()
-	service := d.getService(client)
-
-	request := &request.StopServerRequest{
-		UUID: d.ServerUUID,
-	}
-	_, err := service.StopServer(request)
+	err := d.stopServer(d.ServerUUID, request.ServerStopTypeHard)
 	return err
 }
 
 func (d *Driver) Remove() error {
 	details, err := d.getServerDetails(d.ServerUUID)
+
+	err = d.stopServer(details.UUID, request.ServerStopTypeHard)
+	if err != nil {
+		return err
+	}
+
+	err = d.waitForState(upcloud.ServerStateStopped)
+	if err != nil {
+		return err
+	}
 
 	err = d.deleteServer(details.UUID)
 	if err != nil {
@@ -359,19 +360,17 @@ func (d *Driver) Remove() error {
 }
 
 func (d *Driver) getClient() *client.Client {
-	user := d.User
-	passwd := d.Passwd
-
-	return client.New(user, passwd)
+	client := client.New(d.User, d.Passwd)
+	client.SetTimeout(time.Second * 30)
+	return client
 }
 
-func (d *Driver) getService(client *client.Client) *service.Service {
-	return service.New(client)
+func (d *Driver) getService() *service.Service {
+	return service.New(d.getClient())
 }
 
 func (d *Driver) getServerDetails(UUID string) (*upcloud.ServerDetails, error) {
-	client := d.getClient()
-	service := d.getService(client)
+	service := d.getService()
 
 	details, err := service.GetServerDetails(&request.GetServerDetailsRequest{UUID: d.ServerUUID})
 
@@ -379,8 +378,7 @@ func (d *Driver) getServerDetails(UUID string) (*upcloud.ServerDetails, error) {
 }
 
 func (d *Driver) deleteStorage(UUID string) error {
-	client := d.getClient()
-	service := d.getService(client)
+	service := d.getService()
 
 	request := &request.DeleteStorageRequest{
 		UUID: UUID,
@@ -392,14 +390,67 @@ func (d *Driver) deleteStorage(UUID string) error {
 }
 
 func (d *Driver) deleteServer(UUID string) error {
-	client := d.getClient()
-	service := d.getService(client)
+	service := d.getService()
 
 	request := &request.DeleteServerRequest{
 		UUID: UUID,
 	}
 
 	err := service.DeleteServer(request)
+
+	return err
+}
+
+func (d *Driver) startServer(UUID string) error {
+	service := d.getService()
+
+	request := &request.StartServerRequest{
+		UUID: UUID,
+	}
+
+	_, err := service.StartServer(request)
+
+	return err
+}
+
+func (d *Driver) stopServer(UUID, stopType string) error {
+	service := d.getService()
+
+	request := &request.StopServerRequest{
+		UUID:     UUID,
+		StopType: stopType,
+	}
+
+	_, err := service.StopServer(request)
+
+	return err
+}
+
+func (d *Driver) restartServer(UUID string) error {
+	service := d.getService()
+
+	request := &request.RestartServerRequest{
+		UUID: UUID,
+	}
+
+	_, err := service.RestartServer(request)
+
+	return err
+}
+
+func (d *Driver) waitForState(state string) error {
+	server_state := "unkown"
+	var err error
+
+	for server_state != state {
+		details, err := d.getServerDetails(d.ServerUUID)
+
+		server_state = details.State
+
+		if err != nil {
+			return err
+		}
+	}
 
 	return err
 }
