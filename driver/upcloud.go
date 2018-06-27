@@ -34,7 +34,7 @@ type Driver struct {
 
 const (
 	defaultSSHUser  = "root"
-	defaultTemplate = "01000000-0000-4000-8000-000030030200"
+	defaultTemplate = "01000000-0000-4000-8000-000030060200" // Ubuntu Server 16.04 LTS (Xenial Xerus)
 	defaultZone     = "uk-lon1"
 	defaultPlan     = "1xCPU-1GB"
 )
@@ -131,7 +131,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SetSwarmConfigFromFlags(flags)
 
 	if d.User == "" || d.Passwd == "" {
-		return fmt.Errorf("upcloud driver requires upcloud credentials.")
+		return fmt.Errorf("upcloud driver requires UpCloud's credentials.")
 	}
 
 	return nil
@@ -149,13 +149,14 @@ func (d *Driver) PreCreateCheck() error {
 	if err != nil {
 		return err
 	}
+
 	for _, zone := range zones.Zones {
 		if zone.Id == d.Zone {
 			return nil
 		}
 	}
 
-	return fmt.Errorf("you should use a valid upcloud zone")
+	return fmt.Errorf("You should use a valid UpCloud zone")
 }
 
 func (d *Driver) Create() error {
@@ -169,7 +170,7 @@ func (d *Driver) Create() error {
 		userdata = string(buf)
 	}
 
-	log.Infof("creating SSH key")
+	log.Infof("Creating SSH key")
 	if err := ssh.GenerateSSHKey(d.GetSSHKeyPath()); err != nil {
 		return err
 	}
@@ -209,11 +210,21 @@ func (d *Driver) Create() error {
 		},
 	}
 
-	log.Infof("Creating upcloud server...")
+	log.Infof("Creating UpCloud server...")
 
 	service := d.getService()
 
 	title := "docker-machine - " + d.ServerName
+	if len(title) > 64 {
+		log.Debugf("Title '%s' is too long, substracting it to 64 chars", title)
+		title = title[0:64]
+	}
+
+	hostname := d.ServerName
+	if len(hostname) > 128 {
+		log.Debugf("Hostname '%s' is too long, substracting it to 128 chars", hostname)
+		hostname = hostname[0:128]
+	}
 
 	createRequest := &request.CreateServerRequest{
 		Hostname:       d.ServerName,
@@ -334,9 +345,16 @@ func (d *Driver) Kill() error {
 func (d *Driver) Remove() error {
 	details, err := d.getServerDetails(d.ServerUUID)
 
-	err = d.stopServer(details.UUID, request.ServerStopTypeHard)
-	if err != nil {
-		return err
+	if err == nil && 0 == len(details.UUID) {
+		log.Info("UpCloud instance doesn't exist, assuming it is already deleted")
+		return nil
+	}
+
+	if details.State == upcloud.ServerStateStarted {
+		err = d.stopServer(details.UUID, request.ServerStopTypeHard)
+		if err != nil {
+			return err
+		}
 	}
 
 	err = d.waitForState(upcloud.ServerStateStopped)
