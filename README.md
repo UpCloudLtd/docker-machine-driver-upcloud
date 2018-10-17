@@ -2,10 +2,7 @@
 
 A docker-machine driver for [UpCloud](https://www.upcloud.com/)
 
-## Why
-
-We were migrating our CI environment to upcloud and needed a docker-machine
-driver, so we wrote it.
+Originally developed by [Hanzo Studio](https://hanzo.es/)
 
 ## How to get it
 
