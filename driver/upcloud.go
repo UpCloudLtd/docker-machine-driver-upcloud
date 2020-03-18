@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/Jalle19/upcloud-go-sdk/upcloud"
-	"github.com/Jalle19/upcloud-go-sdk/upcloud/client"
-	"github.com/Jalle19/upcloud-go-sdk/upcloud/request"
-	"github.com/Jalle19/upcloud-go-sdk/upcloud/service"
+	"github.com/UpCloudLtd/upcloud-go-api/upcloud"
+	"github.com/UpCloudLtd/upcloud-go-api/upcloud/client"
+	"github.com/UpCloudLtd/upcloud-go-api/upcloud/request"
+	"github.com/UpCloudLtd/upcloud-go-api/upcloud/service"
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
@@ -334,9 +334,11 @@ func (d *Driver) Kill() error {
 func (d *Driver) Remove() error {
 	details, err := d.getServerDetails(d.ServerUUID)
 
-	err = d.stopServer(details.UUID, request.ServerStopTypeHard)
-	if err != nil {
-		return err
+	if details.State == upcloud.ServerStateStarted {
+		err = d.stopServer(details.UUID, request.ServerStopTypeHard)
+		if err != nil {
+			return err
+		}
 	}
 
 	err = d.waitForState(upcloud.ServerStateStopped)
@@ -439,18 +441,11 @@ func (d *Driver) restartServer(UUID string) error {
 }
 
 func (d *Driver) waitForState(state string) error {
-	server_state := "unkown"
-	var err error
-
-	for server_state != state {
-		details, err := d.getServerDetails(d.ServerUUID)
-
-		server_state = details.State
-
-		if err != nil {
-			return err
-		}
-	}
-
+	service := d.getService()
+	_, err := service.WaitForServerState(&request.WaitForServerStateRequest{
+		UUID:         d.ServerUUID,
+		DesiredState: state,
+		Timeout:      time.Minute * 2,
+	})
 	return err
 }
